@@ -84,4 +84,4 @@ insert into adocao_raca (adocao_id, raca_id) values (1, 1), (1, 3); -- Luna, SRD
 insert into adocao_raca (adocao_id, raca_id) values (2, 5);          -- Max, Pastor Alemão
 insert into adocao_raca (adocao_id, raca_id) values (3, 1);          -- Spike, SRD
 insert into adocao_raca (adocao_id, raca_id) values (4, 4);          -- Pipoca, Shih Tzu
-insert into adocao_raca (adocao_id, raca_id) values (5, 4);          -- Toby, Golden
+insert into adocao_raca (adocao_id, raca_id) values (5, 6);          -- Toby, Golden
