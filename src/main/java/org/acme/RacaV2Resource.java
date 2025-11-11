@@ -13,16 +13,28 @@ import org.eclipse.microprofile.openapi.annotations.media.Schema;
 import org.eclipse.microprofile.openapi.annotations.parameters.Parameter;
 import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
+import org.eclipse.microprofile.faulttolerance.CircuitBreaker;
+import org.eclipse.microprofile.faulttolerance.Fallback;
+import org.eclipse.microprofile.faulttolerance.Retry;
+import org.eclipse.microprofile.faulttolerance.Timeout;
+import org.acme.idempotency.Idempotent;
+import org.eclipse.microprofile.openapi.annotations.headers.Header;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 
-@Path("/racas")
-public class RacaResource {
+// MUDANÇA 1: Versão V2
+@Path("/v2/racas")
+@Consumes("application/json")
+@Produces("application/json")
+public class RacaV2Resource { // MUDANÇA 2: Nome da classe
+
+    // MUDANÇA V2: Ordena por nome da raça (ascendente)
     @GET
     @Operation(
-            summary = "Retorna todas as raças (getAll)",
-            description = "Retorna uma lista de raças por padrão no formato JSON"
+            summary = "Retorna todas as raças (getAll) - V2",
+            description = "V2: Retorna uma lista de raças ordenada pelo nome (alfabética) por padrão."
     )
     @APIResponse(
             responseCode = "200",
@@ -32,14 +44,21 @@ public class RacaResource {
                     schema = @Schema(implementation = Raca.class, type = SchemaType.ARRAY)
             )
     )
+    @Timeout(3000)
+    @Fallback(fallbackMethod = "fallbackListaVazia")
     public Response getAll(){
-        return Response.ok(Raca.listAll()).build();
+        // ALTERAÇÃO V2: Ordenação por nome, ascendente
+        return Response.ok(Raca.listAll(Sort.by("nome", Sort.Direction.Ascending))).build();
+    }
+
+    public Response fallbackListaVazia() {
+        return Response.ok(Collections.emptyList()).header("X-Fallback", "true").build();
     }
 
     @GET
     @Path("{id}")
     @Operation(
-            summary = "Retorna uma raça pela busca por ID (getById)",
+            summary = "Retorna uma raça pela busca por ID (getById) - V2",
             description = "Retorna uma raça específica pela busca de ID colocado na URL no formato JSON por padrão"
     )
     @APIResponse(
@@ -47,7 +66,7 @@ public class RacaResource {
             description = "Item retornado com sucesso",
             content = @Content(
                     mediaType = "application/json",
-                    schema = @Schema(implementation = Raca.class, type = SchemaType.ARRAY)
+                    schema = @Schema(implementation = Raca.class)
             )
     )
     @APIResponse(
@@ -69,15 +88,15 @@ public class RacaResource {
 
     @GET
     @Operation(
-            summary = "Retorna as raças conforme o sistema de pesquisa (search)",
-            description = "Retorna uma lista de raças filtrada conforme a pesquisa por padrão no formato JSON"
+            summary = "Retorna as raças conforme o sistema de pesquisa (search) - V2",
+            description = "V2: Retorna uma lista de raças com ordenação padrão por nome (alfabética)."
     )
     @APIResponse(
             responseCode = "200",
             description = "Item retornado com sucesso",
             content = @Content(
                     mediaType = "application/json",
-                    schema = @Schema(implementation = Raca.class, type = SchemaType.ARRAY)
+                    schema = @Schema(implementation = SearchRacaResponse.class)
             )
     )
     @Path("/search")
@@ -85,9 +104,9 @@ public class RacaResource {
             @Parameter(description = "Query de buscar por nome ou descrição")
             @QueryParam("q") String q,
             @Parameter(description = "Campo de ordenação da lista de retorno")
-            @QueryParam("sort") @DefaultValue("id") String sort,
+            @QueryParam("sort") @DefaultValue("nome") String sort, // MUDANÇA V2: Padrão nome
             @Parameter(description = "Esquema de filtragem de raças por ordem crescente ou decrescente")
-            @QueryParam("direction") @DefaultValue("asc") String direction,
+            @QueryParam("direction") @DefaultValue("asc") String direction, // MUDANÇA V2: Padrão ascendente
             @Parameter(description = "Define qual página será retornada na response")
             @QueryParam("page") @DefaultValue("0") int page,
             @Parameter(description = "Define quantos objetos serão retornados por query")
@@ -95,7 +114,7 @@ public class RacaResource {
     ){
         Set<String> allowed = Set.of("id", "nome", "descricao");
         if(!allowed.contains(sort)){
-            sort = "id";
+            sort = "nome"; // MUDANÇA V2: Usar o novo padrão
         }
 
         Sort sortObj = Sort.by(
@@ -118,17 +137,18 @@ public class RacaResource {
 
         var response = new SearchRacaResponse();
         response.Racas = racas;
-        response.TotalRacas = query.list().size();
+        response.TotalRacas = (int) query.count();
         response.TotalPages = query.pageCount();
         response.HasMore = effectivePage < query.pageCount() - 1;
-        response.NextPage = response.HasMore ? "http://localhost:8080/racas/search?q="+(q != null ? q : "")+"&page="+(effectivePage + 1) + (size > 0 ? "&size="+size : "") : "";
+        // MUDANÇA V2: Atualiza NextPage para /v2
+        response.NextPage = response.HasMore ? "http://localhost:8080/v2/racas/search?q="+(q != null ? q : "")+"&page="+(effectivePage + 1) + (size > 0 ? "&size="+size : "") : "";
 
         return Response.ok(response).build();
     }
 
     @POST
     @Operation(
-            summary = "Adiciona um registro à lista de raças (insert)",
+            summary = "Adiciona um registro à lista de raças (insert) - V2",
             description = "Adiciona um item à lista de raças por meio de POST e request body JSON"
     )
     @RequestBody(
@@ -152,15 +172,36 @@ public class RacaResource {
                     mediaType = "text/plain",
                     schema = @Schema(implementation = String.class))
     )
+    @APIResponse(
+            responseCode = "200",
+            description = "Requisição idempotente repetida. Retorna a resposta original.",
+            headers = @Header(name = "X-Idempotency-Status", description = "IDEMPOTENT_REPLAY"),
+            content = @Content(
+                    mediaType = "application/json",
+                    schema = @Schema(implementation = Raca.class)
+            )
+    )
+    @Idempotent(expireAfter = 7200)
+    @CircuitBreaker(requestVolumeThreshold = 4, failureRatio = 0.75, delay = 10000)
+    @Retry(maxRetries = 2, delay = 500)
+    @Fallback(fallbackMethod = "fallbackInsert")
     @Transactional
     public Response insert(@Valid Raca raca){
         Raca.persist(raca);
-        return Response.status(Response.Status.CREATED).build();
+        // MUDANÇA V2: Ajusta URI de retorno para /v2
+        return Response.status(Response.Status.CREATED)
+                .header("Location", "/v2/racas/" + raca.id)
+                .entity(raca).build();
+    }
+
+    public Response fallbackInsert(Raca raca) {
+        return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                .entity("O serviço de persistência de raças está temporariamente indisponível. Tente novamente mais tarde.").build();
     }
 
     @DELETE
     @Operation(
-            summary = "Remove um registro da lista de raças (delete)",
+            summary = "Remove um registro da lista de raças (delete) - V2",
             description = "Remove um item da lista de raças por meio de Id na URL"
     )
     @APIResponse(
@@ -184,6 +225,7 @@ public class RacaResource {
                     mediaType = "text/plain",
                     schema = @Schema(implementation = String.class))
     )
+    @Idempotent
     @Transactional
     @Path("{id}")
     public Response delete(@PathParam("id") long id){
@@ -205,7 +247,7 @@ public class RacaResource {
 
     @PUT
     @Operation(
-            summary = "Altera um registro da lista de raças (update)",
+            summary = "Altera um registro da lista de raças (update) - V2",
             description = "Edita um item da lista de raças por meio de Id na URL e request body JSON"
     )
     @RequestBody(
@@ -220,7 +262,7 @@ public class RacaResource {
             description = "Item editado com sucesso",
             content = @Content(
                     mediaType = "application/json",
-                    schema = @Schema(implementation = Raca.class, type = SchemaType.ARRAY)
+                    schema = @Schema(implementation = Raca.class)
             )
     )
     @APIResponse(
@@ -230,9 +272,10 @@ public class RacaResource {
                     mediaType = "text/plain",
                     schema = @Schema(implementation = String.class))
     )
+    @Idempotent
     @Transactional
     @Path("{id}")
-    public Response update(@PathParam("id") long id,@Valid Raca newRaca){
+    public Response update(@PathParam("id") long id, @Valid Raca newRaca){
         Raca entity = Raca.findById(id);
         if(entity == null){
             return Response.status(Response.Status.NOT_FOUND).build();
