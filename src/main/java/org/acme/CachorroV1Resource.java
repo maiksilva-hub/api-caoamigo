@@ -13,12 +13,23 @@ import org.eclipse.microprofile.openapi.annotations.media.Schema;
 import org.eclipse.microprofile.openapi.annotations.parameters.Parameter;
 import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
+import org.eclipse.microprofile.faulttolerance.CircuitBreaker;
+import org.eclipse.microprofile.faulttolerance.Fallback;
+import org.eclipse.microprofile.faulttolerance.Retry;
+import org.eclipse.microprofile.faulttolerance.Timeout;
+import org.acme.idempotency.Idempotent;
+import org.eclipse.microprofile.openapi.annotations.headers.Header;
 
 import java.util.List;
 import java.util.Set;
 
-@Path("/cachorros")
-public class CachorroResource {
+// MUDANÇA 1: Versionamento V1
+@Path("/v1/cachorros")
+@Consumes("application/json")
+@Produces("application/json")
+// MUDANÇA 2: Renomear a classe para V1
+public class CachorroV1Resource {
+
     @GET
     @Operation(
             summary = "Retorna todos os cachorros (getAll)",
@@ -32,8 +43,14 @@ public class CachorroResource {
                     schema = @Schema(implementation = Cachorro.class, type = SchemaType.ARRAY)
             )
     )
+    @Timeout(3000)
+    @Fallback(fallbackMethod = "fallbackListaVazia")
     public Response getAll(){
         return Response.ok(Cachorro.listAll()).build();
+    }
+
+    public Response fallbackListaVazia() {
+        return Response.ok(List.of()).header("X-Fallback", "true").build();
     }
 
     @GET
@@ -47,7 +64,7 @@ public class CachorroResource {
             description = "Item retornado com sucesso",
             content = @Content(
                     mediaType = "application/json",
-                    schema = @Schema(implementation = Cachorro.class, type = SchemaType.ARRAY)
+                    schema = @Schema(implementation = Cachorro.class)
             )
     )
     @APIResponse(
@@ -118,10 +135,11 @@ public class CachorroResource {
 
         var response = new SearchCachorroResponse();
         response.Cachorros = cachorros;
-        response.TotalCachorros = query.list().size();
+        response.TotalCachorros = (int) query.count(); // MUDANÇA: Usar count() para total preciso de Panache
         response.TotalPages = query.pageCount();
         response.HasMore = effectivePage < query.pageCount() - 1;
-        response.NextPage = response.HasMore ? "http://localhost:8080/cachorros/search?q="+(q != null ? q : "")+"&page="+(effectivePage + 1) + (size > 0 ? "&size="+size : "") : "";
+        // MUDANÇA 3: Atualiza NextPage para V1
+        response.NextPage = response.HasMore ? "http://localhost:8080/v1/cachorros/search?q="+(q != null ? q : "")+"&page="+(effectivePage + 1) + (size > 0 ? "&size="+size : "") : "";
 
         return Response.ok(response).build();
     }
@@ -152,10 +170,32 @@ public class CachorroResource {
                     mediaType = "text/plain",
                     schema = @Schema(implementation = String.class))
     )
+    // MUDANÇA 4: Adiciona documentação de Idempotência
+    @APIResponse(
+            responseCode = "200",
+            description = "Requisição idempotente repetida. Retorna a resposta original.",
+            headers = @Header(name = "X-Idempotency-Status", description = "IDEMPOTENT_REPLAY"),
+            content = @Content(
+                    mediaType = "application/json",
+                    schema = @Schema(implementation = Cachorro.class)
+            )
+    )
+    @Idempotent(expireAfter = 7200)
+    @CircuitBreaker(requestVolumeThreshold = 4, failureRatio = 0.75, delay = 10000)
+    @Retry(maxRetries = 2, delay = 500)
+    @Fallback(fallbackMethod = "fallbackInsert")
     @Transactional
     public Response insert(@Valid Cachorro cachorro){
         Cachorro.persist(cachorro);
-        return Response.status(Response.Status.CREATED).build();
+        // MUDANÇA 5: Retorna o objeto criado e ajusta a URI para V1
+        return Response.status(Response.Status.CREATED)
+                .header("Location", "/v1/cachorros/" + cachorro.id)
+                .entity(cachorro).build();
+    }
+
+    public Response fallbackInsert(Cachorro cachorro) {
+        return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                .entity("O serviço de persistência de cachorros está temporariamente indisponível. Tente novamente mais tarde.").build();
     }
 
     @DELETE
@@ -184,6 +224,7 @@ public class CachorroResource {
                     mediaType = "text/plain",
                     schema = @Schema(implementation = String.class))
     )
+    @Idempotent // Idempotência em DELETE é útil para garantir que a remoção ocorra uma vez
     @Transactional
     @Path("{id}")
     public Response delete(@PathParam("id") long id){
@@ -220,7 +261,7 @@ public class CachorroResource {
             description = "Item editado com sucesso",
             content = @Content(
                     mediaType = "application/json",
-                    schema = @Schema(implementation = Cachorro.class, type = SchemaType.ARRAY)
+                    schema = @Schema(implementation = Cachorro.class) // Corrigido para não ser ARRAY
             )
     )
     @APIResponse(
@@ -230,6 +271,7 @@ public class CachorroResource {
                     mediaType = "text/plain",
                     schema = @Schema(implementation = String.class))
     )
+    @Idempotent // Idempotência em PUT é útil para garantir que a atualização ocorra uma vez
     @Transactional
     @Path("{id}")
     public Response update(@PathParam("id") long id, @Valid Cachorro newCachorro){
@@ -241,7 +283,6 @@ public class CachorroResource {
         entity.dataDeNascimento = newCachorro.dataDeNascimento;
         entity.localDeResgate = newCachorro.localDeResgate;
 
-        // Atualizar ficha
         if(newCachorro.ficha != null){
             if(entity.ficha == null){
                 entity.ficha = new FichaCachorro();
@@ -250,7 +291,6 @@ public class CachorroResource {
             entity.ficha.temperamentoPrincipal = newCachorro.ficha.temperamentoPrincipal;
             entity.ficha.habilidadesEspeciais = newCachorro.ficha.habilidadesEspeciais;
         } else {
-            // Se não vier ficha no request, limpa a ficha existente
             entity.ficha = null;
         }
 
