@@ -5,50 +5,42 @@ import jakarta.validation.ConstraintViolationException;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.ext.ExceptionMapper;
 import jakarta.ws.rs.ext.Provider;
-
+import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
 
-/**
- * Mapeador de exceções para tratar erros de Bean Validation (@Size, @NotBlank, etc.)
- * Retorna um status 400 Bad Request com detalhes dos erros.
- */
 @Provider
 public class ValidationExceptionMapper implements ExceptionMapper<ConstraintViolationException> {
 
     @Override
     public Response toResponse(ConstraintViolationException exception) {
-        // Coleta todas as mensagens de erro de validação
-        List<String> errors = exception.getConstraintViolations().stream()
-                .map(this::formatViolation)
-                .collect(Collectors.toList());
+        List<String> erros = new ArrayList<>();
 
-        // Cria um objeto de erro com status 400
-        return Response.status(Response.Status.BAD_REQUEST)
-                .entity(new ErrorResponse("Erro de Validação: Dados de entrada inválidos.", errors))
+        for (ConstraintViolation<?> violation : exception.getConstraintViolations()) {
+            String mensagem = violation.getMessage();
+            String campo = "";
+            try {
+                String[] parts = violation.getPropertyPath().toString().split("\\.");
+                campo = parts[parts.length - 1] + ": ";
+            } catch (Exception e) {
+                campo = "";
+            }
+            erros.add(campo + mensagem);
+        }
+
+        return Response.status(400)
+                .entity(new ErrorBody(400, "Erro de Validação", erros))
                 .build();
     }
 
-    /**
-     * Formata a mensagem de erro para incluir o campo e a mensagem de erro.
-     */
-    private String formatViolation(ConstraintViolation<?> violation) {
-        String field = violation.getPropertyPath().toString();
-        String fieldName = field.substring(field.lastIndexOf('.') + 1);
+    public static class ErrorBody {
+        public int status;
+        public String message;
+        public List<String> errors;
 
-        return String.format("Campo '%s': %s", fieldName, violation.getMessage());
-    }
-
-    public static class ErrorResponse {
-        public String title;
-        public List<String> details;
-
-        public ErrorResponse(String title, List<String> details) {
-            this.title = title;
-            this.details = details;
+        public ErrorBody(int s, String m, List<String> e) {
+            this.status = s;
+            this.message = m;
+            this.errors = e;
         }
-
-        // Construtor sem argumentos para serialização do Jackson
-        public ErrorResponse() {}
     }
 }
