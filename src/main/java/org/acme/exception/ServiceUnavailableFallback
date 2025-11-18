@@ -1,0 +1,14 @@
+package org.acme.exception;
+
+import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.faulttolerance.ExecutionContext;
+import org.eclipse.microprofile.faulttolerance.FallbackHandler;
+
+public class ServiceUnavailableFallback implements FallbackHandler<Response> {
+    @Override
+    public Response handle(ExecutionContext context) {
+        return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                .entity("O serviço de persistência está temporariamente indisponível. Tente novamente mais tarde.")
+                .build();
+    }
+}
